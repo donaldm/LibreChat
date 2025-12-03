@@ -50,6 +50,82 @@ const { getRoleByName } = require('~/models/Role');
 const { loadAgent } = require('~/models/Agent');
 const { getMCPManager } = require('~/config');
 
+/**
+ * Detects the noisy internal webstreams assertion error triggered when a writable stream
+ * is written to after the client disconnects. This surfaces as an `ERR_INTERNAL_ASSERTION`
+ * from Node's `writablestream` internals and should be treated as a benign transport
+ * issue rather than a tool failure so the run can complete normally.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isWritableStreamInternalAssertion(error) {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const err = /** @type {{ code?: string; message?: string; stack?: string }} */ (error);
+  if (err.code === 'ERR_INTERNAL_ASSERTION') {
+    return true;
+  }
+
+  const stack = err.stack || err.message;
+  return typeof stack === 'string' && stack.includes('writablestream');
+}
+
+/**
+ * Determines whether an abort reason represents a timeout rather than a
+ * user-driven cancellation. This lets us treat upstream timeout signals as
+ * benign so we can still surface tool outputs.
+ *
+ * @param {unknown} reason - The AbortSignal reason
+ * @returns {boolean}
+ */
+function isTimeoutAbortReason(reason) {
+  if (!reason) return false;
+
+  if (reason?.name === 'AbortError') return true;
+
+  if (reason === 'TimeoutError') return true;
+
+  if (reason?.name === 'TimeoutError') return true;
+
+  if (reason instanceof Error) {
+    return reason.message?.toLowerCase().includes('timeout');
+  }
+
+  if (typeof reason === 'string') {
+    return reason.toLowerCase().includes('timeout');
+  }
+
+  return false;
+}
+
+/**
+ * Detects network-level fetch failures that should be surfaced to the user
+ * rather than being mistaken for user cancellations.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isFetchFailedError(error) {
+  if (!error) return false;
+
+  if (error instanceof Error && error.message?.toLowerCase().includes('fetch failed')) {
+    return true;
+  }
+
+  if (typeof error === 'string') {
+    return error.toLowerCase().includes('fetch failed');
+  }
+
+  if (typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message.toLowerCase().includes('fetch failed');
+  }
+
+  return false;
+}
+
 const omitTitleOptions = new Set([
   'stream',
   'thinking',
@@ -948,11 +1024,19 @@ class AgentClient extends BaseClient {
 
         /** @deprecated Agent Chain */
         config.configurable.last_agent_id = agents[agents.length - 1].id;
-        await run.processStream({ messages }, config, {
-          callbacks: {
-            [Callback.TOOL_ERROR]: logToolError,
-          },
-        });
+        try {
+          await run.processStream({ messages }, config, {
+            callbacks: {
+              [Callback.TOOL_ERROR]: logToolError,
+            },
+          });
+        } catch (error) {
+          if (isWritableStreamInternalAssertion(error)) {
+            logger.warn('[AgentClient] Ignoring writable stream assertion during processStream');
+          } else {
+            throw error;
+          }
+        }
 
         config.signal = null;
       };
@@ -991,19 +1075,50 @@ class AgentClient extends BaseClient {
         logger.error('[AgentClient] Error capturing agent ID map:', error);
       }
     } catch (err) {
-      logger.error(
-        '[api/server/controllers/agents/client.js #sendCompletion] Operation aborted',
-        err,
-      );
-      if (!abortController.signal.aborted) {
+      const abortReason = abortController.signal?.reason;
+      const timeoutAbort = isTimeoutAbortReason(abortReason) || isTimeoutAbortReason(err);
+      const fetchFailed =
+        !timeoutAbort && (isFetchFailedError(err) || isFetchFailedError(abortReason));
+
+      if (fetchFailed) {
         logger.error(
-          '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error type',
+          '[api/server/controllers/agents/client.js #sendCompletion] MCP transport fetch failed',
           err,
         );
+
         this.contentParts.push({
           type: ContentTypes.ERROR,
-          [ContentTypes.ERROR]: `An error occurred while processing the request${err?.message ? `: ${err.message}` : ''}`,
+          [ContentTypes.ERROR]:
+            'Unable to reach the MCP server (fetch failed). Please verify the server is reachable and try again.',
         });
+      } else if (timeoutAbort) {
+        abortController.allowTimeoutCompletion = true;
+        logger.warn(
+          '[api/server/controllers/agents/client.js #sendCompletion] Upstream timeout abort ignored to allow completion',
+        );
+      } else {
+        logger.error(
+          '[api/server/controllers/agents/client.js #sendCompletion] Operation aborted',
+          err,
+        );
+      }
+
+      if (!abortController.signal.aborted || timeoutAbort || fetchFailed) {
+        if (timeoutAbort) {
+          logger.debug(
+            '[api/server/controllers/agents/client.js #sendCompletion] Skipping error emission for timeout-derived abort',
+          );
+        } else if (!fetchFailed) {
+          logger.error(
+            '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error type',
+            err,
+          );
+
+          this.contentParts.push({
+            type: ContentTypes.ERROR,
+            [ContentTypes.ERROR]: `An error occurred while processing the request${err?.message ? `: ${err.message}` : ''}`,
+          });
+        }
       }
     } finally {
       try {

@@ -237,7 +237,7 @@ const AgentController = async (req, res, next, initializeClient, addTitle) => {
     }
 
     // Only send if not aborted
-    if (!abortController.signal.aborted) {
+    if (!abortController.signal.aborted || abortController.allowTimeoutCompletion) {
       // Create a new response object with minimal copies
       const finalResponse = { ...response };
 
