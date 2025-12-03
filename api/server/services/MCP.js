@@ -139,6 +139,33 @@ function createAbortHandler({ userId, serverName, toolName, flowManager }) {
 }
 
 /**
+ * Determines whether an abort reason represents a timeout rather than a user-initiated cancel.
+ *
+ * This allows us to ignore upstream timeout signals (e.g., from the orchestrator) so long-running
+ * MCP tool calls can continue to completion.
+ *
+ * @param {unknown} reason - The AbortSignal reason
+ * @returns {boolean}
+ */
+function isTimeoutAbortReason(reason) {
+  if (!reason) return false;
+
+  if (reason === 'TimeoutError') return true;
+
+  if (reason?.name === 'TimeoutError') return true;
+
+  if (reason instanceof Error) {
+    return reason.message?.toLowerCase().includes('timeout');
+  }
+
+  if (typeof reason === 'string') {
+    return reason.toLowerCase().includes('timeout');
+  }
+
+  return false;
+}
+
+/**
  * @param {Object} params
  * @param {() => void} params.runStepEmitter
  * @param {(authURL: string) => void} params.runStepDeltaEmitter
@@ -326,11 +353,41 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
     let abortHandler = null;
     /** @type {AbortSignal} */
     let derivedSignal = null;
+    /** @type {AbortController | null} */
+    let internalAbortController = null;
+    /** @type {(() => void) | null} */
+    let signalCleanup = null;
 
     try {
       const flowsCache = getLogStores(CacheKeys.FLOWS);
       const flowManager = getFlowStateManager(flowsCache);
-      derivedSignal = config?.signal ? AbortSignal.any([config.signal]) : undefined;
+      if (config?.signal) {
+        internalAbortController = new AbortController();
+
+        const forwardAbort = () => {
+          const reason = config.signal?.reason;
+          const isTimeout = isTimeoutAbortReason(reason);
+
+          if (isTimeout) {
+            logger.warn(
+              `[MCP][${serverName}][${toolName}] Upstream signal aborted due to timeout; allowing MCP tool call to continue`,
+            );
+            return;
+          }
+
+          internalAbortController?.abort(reason);
+        };
+
+        if (config.signal.aborted) {
+          forwardAbort();
+        }
+
+        config.signal.addEventListener('abort', forwardAbort, { once: true });
+        signalCleanup = () => config.signal.removeEventListener('abort', forwardAbort);
+        derivedSignal = internalAbortController.signal;
+      } else {
+        derivedSignal = undefined;
+      }
       const mcpManager = getMCPManager(userId);
       const provider = (config?.metadata?.provider || _provider)?.toLowerCase();
 
@@ -414,6 +471,9 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       // Clean up abort handler to prevent memory leaks
       if (abortHandler && derivedSignal) {
         derivedSignal.removeEventListener('abort', abortHandler);
+      }
+      if (signalCleanup) {
+        signalCleanup();
       }
     }
   };
