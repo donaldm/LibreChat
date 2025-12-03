@@ -101,6 +101,31 @@ function isTimeoutAbortReason(reason) {
   return false;
 }
 
+/**
+ * Detects network-level fetch failures that should be surfaced to the user
+ * rather than being mistaken for user cancellations.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isFetchFailedError(error) {
+  if (!error) return false;
+
+  if (error instanceof Error && error.message?.toLowerCase().includes('fetch failed')) {
+    return true;
+  }
+
+  if (typeof error === 'string') {
+    return error.toLowerCase().includes('fetch failed');
+  }
+
+  if (typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message.toLowerCase().includes('fetch failed');
+  }
+
+  return false;
+}
+
 const omitTitleOptions = new Set([
   'stream',
   'thinking',
@@ -1052,8 +1077,21 @@ class AgentClient extends BaseClient {
     } catch (err) {
       const abortReason = abortController.signal?.reason;
       const timeoutAbort = isTimeoutAbortReason(abortReason) || isTimeoutAbortReason(err);
+      const fetchFailed =
+        !timeoutAbort && (isFetchFailedError(err) || isFetchFailedError(abortReason));
 
-      if (timeoutAbort) {
+      if (fetchFailed) {
+        logger.error(
+          '[api/server/controllers/agents/client.js #sendCompletion] MCP transport fetch failed',
+          err,
+        );
+
+        this.contentParts.push({
+          type: ContentTypes.ERROR,
+          [ContentTypes.ERROR]:
+            'Unable to reach the MCP server (fetch failed). Please verify the server is reachable and try again.',
+        });
+      } else if (timeoutAbort) {
         abortController.allowTimeoutCompletion = true;
         logger.warn(
           '[api/server/controllers/agents/client.js #sendCompletion] Upstream timeout abort ignored to allow completion',
@@ -1065,12 +1103,12 @@ class AgentClient extends BaseClient {
         );
       }
 
-      if (!abortController.signal.aborted || timeoutAbort) {
+      if (!abortController.signal.aborted || timeoutAbort || fetchFailed) {
         if (timeoutAbort) {
           logger.debug(
             '[api/server/controllers/agents/client.js #sendCompletion] Skipping error emission for timeout-derived abort',
           );
-        } else {
+        } else if (!fetchFailed) {
           logger.error(
             '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error type',
             err,

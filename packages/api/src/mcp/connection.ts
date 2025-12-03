@@ -67,6 +67,38 @@ function isStreamableHTTPOptions(options: t.MCPOptions): options is t.Streamable
   return false;
 }
 
+function isAbortLikeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+
+  const err = error as { name?: string; message?: string; code?: string | number; cause?: unknown };
+
+  if (err.name === 'AbortError' || err.code === 'UND_ERR_ABORTED') {
+    return true;
+  }
+
+  if (typeof err.message === 'string') {
+    const message = err.message.toLowerCase();
+    if (message.includes('aborted') || message.includes('abort')) {
+      return true;
+    }
+  }
+
+  if (err.cause && typeof err.cause === 'object') {
+    const cause = err.cause as { name?: string; message?: string };
+    if (cause.name === 'AbortError') {
+      return true;
+    }
+
+    if (typeof cause.message === 'string' && cause.message.toLowerCase().includes('aborted')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 const FIVE_MINUTES = 5 * 60 * 1000;
 const DEFAULT_TIMEOUT = mcpConfig.DEFAULT_TIMEOUT_MS || FIVE_MINUTES;
 
@@ -608,6 +640,11 @@ export class MCPConnection extends EventEmitter {
 
   private setupTransportErrorHandlers(transport: Transport): void {
     transport.onerror = (error) => {
+      if (isAbortLikeError(error)) {
+        logger.warn(`${this.getLogPrefix()} Transport aborted by upstream signal or client disconnect`);
+        return;
+      }
+
       if (error && typeof error === 'object' && 'code' in error) {
         const errorCode = (error as unknown as { code?: number }).code;
 
