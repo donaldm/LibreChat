@@ -126,6 +126,34 @@ function isFetchFailedError(error) {
   return false;
 }
 
+function createTimeoutFilteredSignal(signal) {
+  if (!signal) {
+    return { signal: undefined, cleanup: () => {} };
+  }
+
+  const controller = new AbortController();
+  const forwardAbort = () => {
+    const reason = signal.reason;
+    if (isTimeoutAbortReason(reason)) {
+      logger.warn('[AgentClient] Upstream signal aborted due to timeout; ignoring for agent run');
+      return;
+    }
+
+    controller.abort(reason);
+  };
+
+  if (signal.aborted) {
+    forwardAbort();
+  } else {
+    signal.addEventListener('abort', forwardAbort, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => signal.removeEventListener?.('abort', forwardAbort),
+  };
+}
+
 const omitTitleOptions = new Set([
   'stream',
   'thinking',
@@ -910,6 +938,8 @@ class AgentClient extends BaseClient {
     let run;
     /** @type {Promise<(TAttachment | null)[] | undefined>} */
     let memoryPromise;
+    /** @type {() => void} */
+    let filteredSignalCleanup = () => {};
     const appConfig = this.options.req.config;
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
@@ -917,6 +947,11 @@ class AgentClient extends BaseClient {
       if (!abortController) {
         abortController = new AbortController();
       }
+
+      const { signal: filteredSignal, cleanup } = createTimeoutFilteredSignal(
+        abortController.signal,
+      );
+      filteredSignalCleanup = cleanup;
 
       /** @type {AppConfig['endpoints']['agents']} */
       const agentsEConfig = appConfig.endpoints?.[EModelEndpoint.agents];
@@ -936,7 +971,7 @@ class AgentClient extends BaseClient {
           user: createSafeUser(this.options.req.user),
         },
         recursionLimit: agentsEConfig?.recursionLimit ?? 25,
-        signal: abortController.signal,
+        signal: filteredSignal,
         streamMode: 'values',
         version: 'v2',
       };
@@ -1138,6 +1173,7 @@ class AgentClient extends BaseClient {
           err,
         );
       }
+      filteredSignalCleanup?.();
       run = null;
       config = null;
       memoryPromise = null;

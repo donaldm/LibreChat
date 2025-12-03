@@ -13,6 +13,7 @@ import SubRow from '~/components/Chat/Messages/SubRow';
 import { fontSizeAtom } from '~/store/fontSize';
 import { MessageContext } from '~/Providers';
 import { useMessageActions } from '~/hooks';
+import { getAllContentText } from '~/utils/messages';
 import { cn, logger } from '~/utils';
 import store from '~/store';
 
@@ -114,6 +115,8 @@ const MessageRender = memo(
       return null;
     }
 
+    const messageText = useMemo(() => msg.text || getAllContentText(msg) || '', [msg]);
+
     const baseClasses = {
       common: 'group mx-auto flex flex-1 gap-3 transition-all duration-300 transform-gpu ',
       card: 'relative w-full gap-1 rounded-lg border border-border-medium bg-surface-primary-alt p-2 md:w-1/2 md:gap-3 md:p-4',
@@ -183,7 +186,7 @@ const MessageRender = memo(
                   ask={ask}
                   edit={edit}
                   isLast={isLast}
-                  text={msg.text || ''}
+                  text={messageText}
                   message={msg}
                   enterEdit={enterEdit}
                   error={!!(msg.error ?? false)}
