@@ -227,11 +227,16 @@ Please follow these instructions when using tools from the respective MCP server
         connection.setRequestHeaders(currentOptions.headers || {});
       }
 
+      const { timeout: overriddenTimeout, ...passthroughOptions } = options ?? {};
+
       const requestOptions = {
-        timeout: connection.timeout,
         resetTimeoutOnProgress: true,
-        ...(options?.timeout != null ? { timeout: options.timeout } : {}),
-        ...options,
+        ...passthroughOptions,
+        ...(overriddenTimeout != null
+          ? { timeout: overriddenTimeout }
+          : connection.timeout != null
+            ? { timeout: connection.timeout }
+            : {}),
       } satisfies RequestOptions;
 
       const result = await connection.client.request(

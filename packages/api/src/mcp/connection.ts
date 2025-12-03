@@ -11,6 +11,7 @@ import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/webso
 import { ResourceListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import type {
   RequestInit as UndiciRequestInit,
@@ -133,6 +134,18 @@ export class MCPConnection extends EventEmitter {
         capabilities: {},
       },
     );
+
+    const defaultRequestTimeout = this.timeout ?? DEFAULT_TIMEOUT;
+    const originalRequest = this.client.request.bind(this.client);
+
+    this.client.request = (request, schema, options) => {
+      const normalizedOptions = {
+        ...options,
+        ...(options?.timeout == null ? { timeout: defaultRequestTimeout } : {}),
+      } satisfies RequestOptions;
+
+      return originalRequest(request, schema, normalizedOptions);
+    };
 
     this.setupEventListeners();
   }
