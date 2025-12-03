@@ -150,6 +150,12 @@ function createAbortHandler({ userId, serverName, toolName, flowManager }) {
 function isTimeoutAbortReason(reason) {
   if (!reason) return false;
 
+  // Node's WHATWG AbortSignal uses DOMException with name "AbortError" and message
+  // "This operation was aborted" when a fetch request exceeds its timeout. Treat
+  // this as a timeout-derived abort so MCP tool calls are not prematurely stopped
+  // by upstream 60s fetch limits.
+  if (reason?.name === 'AbortError') return true;
+
   if (reason === 'TimeoutError') return true;
 
   if (reason?.name === 'TimeoutError') return true;
