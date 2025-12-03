@@ -645,6 +645,14 @@ export class MCPConnection extends EventEmitter {
         return;
       }
 
+      const isStreamableTransport = transport instanceof StreamableHTTPClientTransport;
+      const errorMessage = String((error as Error)?.message ?? error ?? '').toLowerCase();
+      const isTransientStreamableError =
+        isStreamableTransport &&
+        (errorMessage.includes('fetch failed') ||
+          errorMessage.includes('network') ||
+          errorMessage.includes('timeout'));
+
       if (error && typeof error === 'object' && 'code' in error) {
         const errorCode = (error as unknown as { code?: number }).code;
 
@@ -665,6 +673,13 @@ export class MCPConnection extends EventEmitter {
       }
 
       logger.error(`${this.getLogPrefix()} Transport error:`, error);
+
+      if (isTransientStreamableError) {
+        logger.warn(
+          `${this.getLogPrefix()} Streamable HTTP transport hit a transient network error; allowing built-in reconnection to continue without closing the client`,
+        );
+        return;
+      }
 
       this.emit('connectionChange', 'error');
     };
