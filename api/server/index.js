@@ -10,6 +10,7 @@ const compression = require('compression');
 const cookieParser = require('cookie-parser');
 const { logger } = require('@librechat/data-schemas');
 const mongoSanitize = require('express-mongo-sanitize');
+require('./utils/patchAgents');
 const {
   isEnabled,
   ErrorController,

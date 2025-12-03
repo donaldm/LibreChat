@@ -1,9 +1,7 @@
 import { useRecoilState } from 'recoil';
 import { useEffect, useCallback } from 'react';
-import { isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps } from '~/common';
-import MessageContent from '~/components/Messages/MessageContent';
 import MessageParts from './MessageParts';
 import Message from './Message';
 import store from '~/store';
@@ -45,21 +43,9 @@ export default function MultiMessage({
     return null;
   }
 
-  if (isAssistantsEndpoint(message.endpoint) && message.content) {
+  if (message.content && message.content.length > 0) {
     return (
       <MessageParts
-        key={message.messageId}
-        message={message}
-        currentEditId={currentEditId}
-        setCurrentEditId={setCurrentEditId}
-        siblingIdx={messagesTree.length - siblingIdx - 1}
-        siblingCount={messagesTree.length}
-        setSiblingIdx={setSiblingIdxRev}
-      />
-    );
-  } else if (message.content) {
-    return (
-      <MessageContent
         key={message.messageId}
         message={message}
         currentEditId={currentEditId}

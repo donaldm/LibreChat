@@ -234,7 +234,9 @@ async function reconnectServer({ res, user, index, signal, serverName, userMCPAu
     userMCPAuthMap,
     forceNew: true,
     returnOnOAuth: false,
-    connectionTimeout: Time.TWO_MINUTES,
+    // Long-running MCP pipelines routinely exceed two minutes; extend the
+    // connection timeout so the stream stays alive through completion.
+    connectionTimeout: Time.TEN_MINUTES,
   });
 }
 
