@@ -227,6 +227,18 @@ Please follow these instructions when using tools from the respective MCP server
         connection.setRequestHeaders(currentOptions.headers || {});
       }
 
+      const { timeout: overriddenTimeout, ...passthroughOptions } = options ?? {};
+
+      const requestOptions = {
+        resetTimeoutOnProgress: true,
+        ...passthroughOptions,
+        ...(overriddenTimeout != null
+          ? { timeout: overriddenTimeout }
+          : connection.timeout != null
+            ? { timeout: connection.timeout }
+            : {}),
+      } satisfies RequestOptions;
+
       const result = await connection.client.request(
         {
           method: 'tools/call',
@@ -236,11 +248,7 @@ Please follow these instructions when using tools from the respective MCP server
           },
         },
         CallToolResultSchema,
-        {
-          timeout: connection.timeout,
-          resetTimeoutOnProgress: true,
-          ...options,
-        },
+        requestOptions,
       );
       if (userId) {
         this.updateUserLastActivity(userId);

@@ -11,6 +11,7 @@ import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/webso
 import { ResourceListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import type {
   RequestInit as UndiciRequestInit,
@@ -67,7 +68,7 @@ function isStreamableHTTPOptions(options: t.MCPOptions): options is t.Streamable
 }
 
 const FIVE_MINUTES = 5 * 60 * 1000;
-const DEFAULT_TIMEOUT = 60000;
+const DEFAULT_TIMEOUT = mcpConfig.DEFAULT_TIMEOUT_MS || FIVE_MINUTES;
 
 interface MCPConnectionParams {
   serverName: string;
@@ -119,7 +120,7 @@ export class MCPConnection extends EventEmitter {
     this.serverName = params.serverName;
     this.userId = params.userId;
     this.iconPath = params.serverConfig.iconPath;
-    this.timeout = params.serverConfig.timeout;
+    this.timeout = params.serverConfig.timeout ?? mcpConfig.DEFAULT_TIMEOUT_MS;
     this.lastPingTime = Date.now();
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
@@ -133,6 +134,18 @@ export class MCPConnection extends EventEmitter {
         capabilities: {},
       },
     );
+
+    const defaultRequestTimeout = this.timeout ?? DEFAULT_TIMEOUT;
+    const originalRequest = this.client.request.bind(this.client);
+
+    this.client.request = (request, schema, options) => {
+      const normalizedOptions = {
+        ...options,
+        ...(options?.timeout == null ? { timeout: defaultRequestTimeout } : {}),
+      } satisfies RequestOptions;
+
+      return originalRequest(request, schema, normalizedOptions);
+    };
 
     this.setupEventListeners();
   }
@@ -160,7 +173,7 @@ export class MCPConnection extends EventEmitter {
       init?: UndiciRequestInit,
     ): Promise<UndiciResponse> {
       const requestHeaders = getHeaders();
-      const effectiveTimeout = timeout || DEFAULT_TIMEOUT;
+      const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT;
       const agent = new Agent({
         bodyTimeout: effectiveTimeout,
         headersTimeout: effectiveTimeout,
@@ -251,7 +264,7 @@ export class MCPConnection extends EventEmitter {
             headers['Authorization'] = `Bearer ${this.oauthTokens.access_token}`;
           }
 
-          const timeoutValue = this.timeout || DEFAULT_TIMEOUT;
+          const timeoutValue = this.timeout ?? DEFAULT_TIMEOUT;
           const transport = new SSEClientTransport(url, {
             requestInit: {
               headers,
