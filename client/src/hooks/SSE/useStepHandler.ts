@@ -61,6 +61,36 @@ export default function useStepHandler({
   const messageMap = useRef(new Map<string, TMessage>());
   const stepMap = useRef(new Map<string, Agents.RunStep>());
 
+  const getRunId = (value?: { runId?: string; run_id?: string }) =>
+    value?.runId ?? value?.run_id ?? '';
+
+  const deriveResponseContext = (
+    runRef: { runId?: string; run_id?: string } | undefined,
+    submission: EventSubmission,
+    fallbacks: Array<{ runId?: string; run_id?: string }> = [],
+    initialParentId?: string,
+  ) => {
+    let parentMessageId = initialParentId ?? submission.userMessage.messageId;
+
+    let responseMessageId = getRunId(runRef);
+    if (!responseMessageId) {
+      for (const fallback of fallbacks) {
+        responseMessageId = getRunId(fallback);
+        if (responseMessageId) break;
+      }
+    }
+
+    if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID || !responseMessageId) {
+      const initialResponseId = submission?.initialResponse?.messageId ?? '';
+      if (initialResponseId) {
+        responseMessageId = initialResponseId;
+        parentMessageId = submission?.initialResponse?.parentMessageId ?? parentMessageId;
+      }
+    }
+
+    return { responseMessageId, parentMessageId };
+  };
+
   const calculateContentIndex = (
     baseIndex: number,
     initialContent: TMessageContentParts[],
@@ -79,6 +109,47 @@ export default function useStepHandler({
       }
     }
     return baseIndex + initialContent.length;
+  };
+
+  const ensureResponseMessage = ({
+    response,
+    responseMessageId,
+    parentMessageId,
+    initialContent,
+    messages,
+    userMessage,
+  }: {
+    response?: TMessage;
+    responseMessageId: string;
+    parentMessageId: string;
+    initialContent: TMessageContentParts[];
+    messages: TMessage[];
+    userMessage: EventSubmission['userMessage'];
+  }): TMessage | undefined => {
+    if (response) {
+      return response;
+    }
+
+    const existingResponse = messages.find((msg) => msg.messageId === responseMessageId);
+    if (existingResponse) {
+      messageMap.current.set(responseMessageId, existingResponse);
+      return existingResponse;
+    }
+
+    const responseMessage = messages[messages.length - 1] as TMessage;
+
+    const hydratedResponse = {
+      ...responseMessage,
+      parentMessageId,
+      conversationId: userMessage.conversationId,
+      messageId: responseMessageId,
+      content: initialContent,
+    };
+
+    messageMap.current.set(responseMessageId, hydratedResponse);
+    setMessages([...messages.slice(0, -1), hydratedResponse]);
+
+    return hydratedResponse;
   };
 
   const updateContent = (
@@ -214,36 +285,31 @@ export default function useStepHandler({
 
       if (event === 'on_run_step') {
         const runStep = data as Agents.RunStep;
-        let responseMessageId = runStep.runId ?? '';
-        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
-          responseMessageId = submission?.initialResponse?.messageId ?? '';
-          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
-        }
+        const normalizedRunId = getRunId(runStep);
+        const normalizedRunStep = { ...runStep, runId: normalizedRunId };
+
+        const { responseMessageId, parentMessageId: derivedParentId } = deriveResponseContext(
+          normalizedRunStep,
+          submission,
+          [submission?.initialResponse ?? {}],
+        );
         if (!responseMessageId) {
           console.warn('No message id found in run step event');
           return;
         }
+        parentMessageId = derivedParentId;
 
-        stepMap.current.set(runStep.id, runStep);
-        let response = messageMap.current.get(responseMessageId);
+        stepMap.current.set(runStep.id, normalizedRunStep);
+        const response = ensureResponseMessage({
+          response: messageMap.current.get(responseMessageId),
+          responseMessageId,
+          parentMessageId,
+          initialContent,
+          messages,
+          userMessage,
+        });
 
-        if (!response) {
-          const responseMessage = messages[messages.length - 1] as TMessage;
-
-          response = {
-            ...responseMessage,
-            parentMessageId,
-            conversationId: userMessage.conversationId,
-            messageId: responseMessageId,
-            content: initialContent,
-          };
-
-          messageMap.current.set(responseMessageId, response);
-          setMessages([...messages.slice(0, -1), response]);
-        }
-
-        // Store tool call IDs if present
-        if (runStep.stepDetails.type === StepTypes.TOOL_CALLS) {
+        if (response && runStep.stepDetails.type === StepTypes.TOOL_CALLS) {
           let updatedResponse = { ...response };
           (runStep.stepDetails.tool_calls as Agents.ToolCall[]).forEach((toolCall) => {
             const toolCallId = toolCall.id ?? '';
@@ -274,15 +340,15 @@ export default function useStepHandler({
         }
       } else if (event === 'on_agent_update') {
         const { agent_update } = data as Agents.AgentUpdate;
-        let responseMessageId = agent_update.runId || '';
-        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
-          responseMessageId = submission?.initialResponse?.messageId ?? '';
-          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
-        }
+        const { responseMessageId, parentMessageId: derivedParentId } = deriveResponseContext(
+          agent_update,
+          submission,
+        );
         if (!responseMessageId) {
           console.warn('No message id found in agent update event');
           return;
         }
+        parentMessageId = derivedParentId;
 
         const response = messageMap.current.get(responseMessageId);
         if (response) {
@@ -296,16 +362,17 @@ export default function useStepHandler({
       } else if (event === 'on_message_delta') {
         const messageDelta = data as Agents.MessageDeltaEvent;
         const runStep = stepMap.current.get(messageDelta.id);
-        let responseMessageId = runStep?.runId ?? '';
-        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
-          responseMessageId = submission?.initialResponse?.messageId ?? '';
-          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
-        }
+        const { responseMessageId, parentMessageId: derivedParentId } = deriveResponseContext(
+          runStep,
+          submission,
+        );
 
         if (!runStep || !responseMessageId) {
           console.warn('No run step or runId found for message delta event');
           return;
         }
+
+        parentMessageId = derivedParentId;
 
         const response = messageMap.current.get(responseMessageId);
         if (response && messageDelta.delta.content) {
@@ -332,16 +399,17 @@ export default function useStepHandler({
       } else if (event === 'on_reasoning_delta') {
         const reasoningDelta = data as Agents.ReasoningDeltaEvent;
         const runStep = stepMap.current.get(reasoningDelta.id);
-        let responseMessageId = runStep?.runId ?? '';
-        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
-          responseMessageId = submission?.initialResponse?.messageId ?? '';
-          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
-        }
+        const { responseMessageId, parentMessageId: derivedParentId } = deriveResponseContext(
+          runStep,
+          submission,
+        );
 
         if (!runStep || !responseMessageId) {
           console.warn('No run step or runId found for reasoning delta event');
           return;
         }
+
+        parentMessageId = derivedParentId;
 
         const response = messageMap.current.get(responseMessageId);
         if (response && reasoningDelta.delta.content != null) {
@@ -368,16 +436,17 @@ export default function useStepHandler({
       } else if (event === 'on_run_step_delta') {
         const runStepDelta = data as Agents.RunStepDeltaEvent;
         const runStep = stepMap.current.get(runStepDelta.id);
-        let responseMessageId = runStep?.runId ?? '';
-        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
-          responseMessageId = submission?.initialResponse?.messageId ?? '';
-          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
-        }
+        const { responseMessageId, parentMessageId: derivedParentId } = deriveResponseContext(
+          runStep,
+          submission,
+        );
 
         if (!runStep || !responseMessageId) {
           console.warn('No run step or runId found for run step delta event');
           return;
         }
+
+        parentMessageId = derivedParentId;
 
         const response = messageMap.current.get(responseMessageId);
         if (
@@ -417,23 +486,45 @@ export default function useStepHandler({
           setMessages(updatedMessages);
         }
       } else if (event === 'on_run_step_completed') {
-        const { result } = data as unknown as { result: Agents.ToolEndEvent };
+        const completionEvent = data as unknown as { result: Agents.ToolEndEvent; run_id?: string };
+        const { result } = completionEvent;
 
         const { id: stepId } = result;
 
-        const runStep = stepMap.current.get(stepId);
-        let responseMessageId = runStep?.runId ?? '';
-        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
-          responseMessageId = submission?.initialResponse?.messageId ?? '';
-          parentMessageId = submission?.initialResponse?.parentMessageId ?? '';
-        }
+        const existingRunStep = stepMap.current.get(stepId);
+        const normalizedRunStep =
+          existingRunStep ??
+          ({
+            id: stepId,
+            runId: getRunId(completionEvent) || getRunId(result),
+            index: result?.index ?? 0,
+            type: StepTypes.TOOL_CALLS,
+          } as Agents.RunStep);
+        stepMap.current.set(stepId, normalizedRunStep);
 
-        if (!runStep || !responseMessageId) {
-          console.warn('No run step or runId found for completed tool call event');
+        const { responseMessageId, parentMessageId: derivedParentId } = deriveResponseContext(
+          normalizedRunStep,
+          submission,
+          [completionEvent, result],
+        );
+
+        if (!responseMessageId) {
+          console.warn('No runId found for completed tool call event');
           return;
         }
 
-        const response = messageMap.current.get(responseMessageId);
+        normalizedRunStep.runId = responseMessageId;
+        parentMessageId = derivedParentId;
+
+        const response = ensureResponseMessage({
+          response: messageMap.current.get(responseMessageId),
+          responseMessageId,
+          parentMessageId,
+          initialContent,
+          messages,
+          userMessage,
+        });
+
         if (response) {
           let updatedResponse = { ...response };
 
@@ -443,7 +534,7 @@ export default function useStepHandler({
           };
 
           /** Tool calls don't need index adjustment */
-          const currentIndex = runStep.index + initialContent.length;
+          const currentIndex = normalizedRunStep.index + initialContent.length;
           updatedResponse = updateContent(updatedResponse, currentIndex, contentPart, true);
 
           messageMap.current.set(responseMessageId, updatedResponse);
@@ -452,6 +543,7 @@ export default function useStepHandler({
           );
 
           setMessages(updatedMessages);
+          setIsSubmitting(false);
         }
       }
 
