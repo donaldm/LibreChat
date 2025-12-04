@@ -620,8 +620,12 @@ export default function useEventHandlers({
       const { messages, userMessage, initialResponse } = submission;
       setCompleted((prev) => new Set(prev.add(initialResponse.messageId)));
 
+      const fallbackMessages = getMessages();
       const conversationId =
-        userMessage.conversationId ?? submission.conversation?.conversationId ?? '';
+        userMessage.conversationId ||
+        submission.conversation?.conversationId ||
+        fallbackMessages?.[fallbackMessages.length - 1]?.conversationId ||
+        '';
 
       const setErrorMessages = (convoId: string, errorMessage: TMessage) => {
         const finalMessages: TMessage[] = [...messages, userMessage, errorMessage];
@@ -646,7 +650,19 @@ export default function useEventHandlers({
       };
 
       if (!data) {
-        const convoId = conversationId || `_${v4()}`;
+        if (conversationId) {
+          queryClient.invalidateQueries([QueryKeys.allConversations]);
+          queryClient.refetchQueries({ queryKey: [QueryKeys.messages, conversationId], type: 'active' });
+          queryClient.refetchQueries({
+            queryKey: [QueryKeys.conversation, conversationId],
+            type: 'active',
+          });
+          setIsSubmitting(false);
+          setShowStopButton(false);
+          return;
+        }
+
+        const convoId = `_${v4()}`;
         const errorMetadata = parseErrorResponse({
           text: 'Error connecting to server, try refreshing the page.',
           ...submission,
@@ -665,6 +681,7 @@ export default function useEventHandlers({
           });
         }
         setIsSubmitting(false);
+        setShowStopButton(false);
         return;
       }
 
@@ -680,11 +697,13 @@ export default function useEventHandlers({
           });
         }
         setIsSubmitting(false);
+        setShowStopButton(false);
         return;
       } else if (!receivedConvoId) {
         const errorResponse = parseErrorResponse(data);
         setErrorMessages(conversationId, errorResponse);
         setIsSubmitting(false);
+        setShowStopButton(false);
         return;
       }
 
@@ -703,6 +722,7 @@ export default function useEventHandlers({
       }
 
       setIsSubmitting(false);
+      setShowStopButton(false);
       return;
     },
     [
@@ -713,6 +733,7 @@ export default function useEventHandlers({
       setIsSubmitting,
       getMessages,
       queryClient,
+      setShowStopButton,
     ],
   );
 

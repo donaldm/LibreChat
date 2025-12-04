@@ -134,6 +134,31 @@ export default function useSSE(
         (startupConfig?.balance?.enabled ?? false) && balanceQuery.refetch();
         console.log('final', data);
         return;
+      } else if (data.result?.content != null) {
+        const conversationId =
+          data.conversationId ??
+          submission.conversation?.conversationId ??
+          userMessage.conversationId ??
+          Constants.NEW_CONVO;
+
+        const responseMessage = {
+          ...(submission.initialResponse as TMessage),
+          ...data,
+          messageId: data.messageId ?? submission.initialResponse?.messageId ?? v4(),
+          parentMessageId: data.parentMessageId ?? userMessage.messageId,
+          conversationId,
+          content: data.result.content,
+        } as TMessage;
+
+        finalHandler(
+          {
+            conversation: { conversationId },
+            requestMessage: userMessage,
+            responseMessage,
+          },
+          { ...submission, userMessage } as EventSubmission,
+        );
+        return;
       } else if (data.created != null) {
         const runId = v4();
         setActiveRunId(runId);
