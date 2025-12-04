@@ -399,7 +399,16 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       const mcpManager = getMCPManager(userId);
       const provider = (config?.metadata?.provider || _provider)?.toLowerCase();
 
-      const { args: _args, stepId, ...toolCall } = config.toolCall ?? {};
+      const { args: _args, stepId: _stepId, ...toolCall } = config.toolCall ?? {};
+
+      // Step ID may arrive as `stepId` (from MCP tool calls) or `id` (from LangGraph)
+      const stepId =
+        _stepId ??
+        toolCall?.id ??
+        config?.metadata?.step_id ??
+        config?.metadata?.tool_call_id ??
+        config?.metadata?.langgraph_node;
+      const runId = config?.metadata?.run_id ?? Constants.USE_PRELIM_RESPONSE_MESSAGE_ID;
       const flowId = `${serverName}:oauth_login:${config.metadata.thread_id}:${config.metadata.run_id}`;
       const runStepDeltaEmitter = createRunStepDeltaEmitter({
         res,
@@ -445,6 +454,27 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         oauthStart,
         oauthEnd,
       });
+
+      // Notify the client that the MCP tool call has completed so UI state can update
+      if (res && stepId) {
+        const toolCallResult = {
+          ...toolCall,
+          output: typeof result === 'string' ? result : JSON.stringify(result),
+        };
+
+        sendEvent(res, {
+          event: GraphEvents.ON_RUN_STEP_COMPLETED,
+          data: {
+            id: stepId,
+            run_id: runId,
+            result: {
+              id: stepId,
+              index: typeof config?.toolCall?.index === 'number' ? config.toolCall.index : 0,
+              tool_call: toolCallResult,
+            },
+          },
+        });
+      }
 
       if (isAssistantsEndpoint(provider) && Array.isArray(result)) {
         return result[0];
