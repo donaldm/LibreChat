@@ -634,12 +634,30 @@ async function getServerConnectionStatus(
   userConnections,
   oauthServers,
 ) {
-  const getConnectionState = () =>
-    appConnections.get(serverName)?.connectionState ??
-    userConnections.get(serverName)?.connectionState ??
-    'disconnected';
+  const checkConnectionState = async () => {
+    /** @type {import('@librechat/api').MCPConnection | undefined} */
+    const appConnection = appConnections.get(serverName);
+    /** @type {import('@librechat/api').MCPConnection | undefined} */
+    const userConnection = userConnections.get(serverName);
 
-  const baseConnectionState = getConnectionState();
+    const connection = appConnection ?? userConnection;
+    if (!connection) {
+      return 'disconnected';
+    }
+
+    try {
+      const isConnected = await connection.isConnected({ forceCheck: true });
+      const connectionState = isConnected ? 'connected' : 'disconnected';
+      connection.connectionState = connectionState;
+      return connectionState;
+    } catch (error) {
+      logger.warn(`[MCP Connection Status] Error verifying ${serverName} connection`, error);
+      connection.connectionState = 'error';
+      return 'error';
+    }
+  };
+
+  const baseConnectionState = await checkConnectionState();
   let finalConnectionState = baseConnectionState;
 
   // connection state overrides specific to OAuth servers
