@@ -117,6 +117,7 @@ export class MCPConnection extends EventEmitter {
   private connectPromise: Promise<void> | null = null;
   private readonly MAX_RECONNECT_ATTEMPTS = 3;
   public readonly serverName: string;
+  private readonly isStreamableTransport: boolean;
   private shouldStopReconnecting = false;
   private isReconnecting = false;
   private isInitializing = false;
@@ -152,7 +153,10 @@ export class MCPConnection extends EventEmitter {
     this.serverName = params.serverName;
     this.userId = params.userId;
     this.iconPath = params.serverConfig.iconPath;
-    this.timeout = params.serverConfig.timeout ?? mcpConfig.DEFAULT_TIMEOUT_MS;
+    this.isStreamableTransport = isStreamableHTTPOptions(this.options);
+    this.timeout = this.isStreamableTransport
+      ? 0
+      : params.serverConfig.timeout ?? mcpConfig.DEFAULT_TIMEOUT_MS;
     this.lastPingTime = Date.now();
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
@@ -167,13 +171,15 @@ export class MCPConnection extends EventEmitter {
       },
     );
 
-    const defaultRequestTimeout = this.timeout ?? DEFAULT_TIMEOUT;
+    const defaultRequestTimeout = this.isStreamableTransport ? 0 : this.timeout ?? DEFAULT_TIMEOUT;
     const originalRequest = this.client.request.bind(this.client);
 
     this.client.request = (request, schema, options) => {
       const normalizedOptions = {
         ...options,
-        ...(options?.timeout == null ? { timeout: defaultRequestTimeout } : {}),
+        ...(options?.timeout == null && defaultRequestTimeout != null
+          ? { timeout: defaultRequestTimeout }
+          : {}),
       } satisfies RequestOptions;
 
       return originalRequest(request, schema, normalizedOptions);
@@ -199,16 +205,18 @@ export class MCPConnection extends EventEmitter {
   private createFetchFunction(
     getHeaders: () => Record<string, string> | null | undefined,
     timeout?: number,
+    options?: { disableBodyTimeout?: boolean; disableAllTimeouts?: boolean },
   ): (input: UndiciRequestInfo, init?: UndiciRequestInit) => Promise<UndiciResponse> {
     return function customFetch(
       input: UndiciRequestInfo,
       init?: UndiciRequestInit,
     ): Promise<UndiciResponse> {
       const requestHeaders = getHeaders();
-      const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT;
+      const hasTimeoutsDisabled = options?.disableAllTimeouts === true;
+      const effectiveTimeout = hasTimeoutsDisabled ? 0 : timeout ?? DEFAULT_TIMEOUT;
       const agent = new Agent({
-        bodyTimeout: effectiveTimeout,
-        headersTimeout: effectiveTimeout,
+        bodyTimeout: hasTimeoutsDisabled || options?.disableBodyTimeout ? 0 : effectiveTimeout,
+        headersTimeout: hasTimeoutsDisabled ? 0 : effectiveTimeout,
       });
       if (!requestHeaders) {
         return undiciFetch(input, { ...init, dispatcher: agent });
@@ -360,6 +368,7 @@ export class MCPConnection extends EventEmitter {
             fetch: this.createFetchFunction(
               this.getRequestHeaders.bind(this),
               this.timeout,
+              { disableBodyTimeout: true, disableAllTimeouts: true },
             ) as unknown as FetchLike,
           });
 
@@ -731,7 +740,7 @@ export class MCPConnection extends EventEmitter {
     }
   }
 
-  public async isConnected(): Promise<boolean> {
+  public async isConnected({ forceCheck = false }: { forceCheck?: boolean } = {}): Promise<boolean> {
     // First check if we're in a connected state
     if (this.connectionState !== 'connected') {
       return false;
@@ -739,7 +748,7 @@ export class MCPConnection extends EventEmitter {
 
     // If we recently checked, skip expensive verification
     const now = Date.now();
-    if (now - this.lastConnectionCheckAt < mcpConfig.CONNECTION_CHECK_TTL) {
+    if (!forceCheck && now - this.lastConnectionCheckAt < mcpConfig.CONNECTION_CHECK_TTL) {
       return true;
     }
     this.lastConnectionCheckAt = now;
