@@ -102,6 +102,13 @@ function isAbortLikeError(error: unknown): boolean {
 const FIVE_MINUTES = 5 * 60 * 1000;
 const DEFAULT_TIMEOUT = mcpConfig.DEFAULT_TIMEOUT_MS || FIVE_MINUTES;
 
+const normalizeTimeout = (value: number | undefined, fallback = DEFAULT_TIMEOUT) => {
+  if (value == null || value <= 0) {
+    return fallback;
+  }
+  return value;
+};
+
 interface MCPConnectionParams {
   serverName: string;
   serverConfig: t.MCPOptions;
@@ -147,6 +154,10 @@ export class MCPConnection extends EventEmitter {
     return this.requestHeaders;
   }
 
+  usesStreamableTransport(): boolean {
+    return this.isStreamableTransport;
+  }
+
   constructor(params: MCPConnectionParams) {
     super();
     this.options = params.serverConfig;
@@ -154,9 +165,13 @@ export class MCPConnection extends EventEmitter {
     this.userId = params.userId;
     this.iconPath = params.serverConfig.iconPath;
     this.isStreamableTransport = isStreamableHTTPOptions(this.options);
+
+    const rawTimeout = params.serverConfig.timeout ?? mcpConfig.DEFAULT_TIMEOUT_MS;
     this.timeout = this.isStreamableTransport
-      ? 0
-      : params.serverConfig.timeout ?? mcpConfig.DEFAULT_TIMEOUT_MS;
+      ? rawTimeout && rawTimeout > 0
+        ? rawTimeout
+        : undefined
+      : normalizeTimeout(rawTimeout);
     this.lastPingTime = Date.now();
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
@@ -171,7 +186,11 @@ export class MCPConnection extends EventEmitter {
       },
     );
 
-    const defaultRequestTimeout = this.isStreamableTransport ? 0 : this.timeout ?? DEFAULT_TIMEOUT;
+    const streamableRequestTimeout =
+      this.timeout && this.timeout > 0 ? this.timeout : mcpConfig.DEFAULT_TIMEOUT_MS;
+    const defaultRequestTimeout = this.isStreamableTransport
+      ? streamableRequestTimeout
+      : normalizeTimeout(this.timeout);
     const originalRequest = this.client.request.bind(this.client);
 
     this.client.request = (request, schema, options) => {
@@ -205,7 +224,12 @@ export class MCPConnection extends EventEmitter {
   private createFetchFunction(
     getHeaders: () => Record<string, string> | null | undefined,
     timeout?: number,
-    options?: { disableBodyTimeout?: boolean; disableAllTimeouts?: boolean },
+    options?: {
+      disableBodyTimeout?: boolean;
+      disableAllTimeouts?: boolean;
+      disableFallbackTimeout?: boolean;
+      overrideTimeout?: number;
+    },
   ): (input: UndiciRequestInfo, init?: UndiciRequestInit) => Promise<UndiciResponse> {
     return function customFetch(
       input: UndiciRequestInfo,
@@ -213,11 +237,33 @@ export class MCPConnection extends EventEmitter {
     ): Promise<UndiciResponse> {
       const requestHeaders = getHeaders();
       const hasTimeoutsDisabled = options?.disableAllTimeouts === true;
-      const effectiveTimeout = hasTimeoutsDisabled ? 0 : timeout ?? DEFAULT_TIMEOUT;
-      const agent = new Agent({
-        bodyTimeout: hasTimeoutsDisabled || options?.disableBodyTimeout ? 0 : effectiveTimeout,
-        headersTimeout: hasTimeoutsDisabled ? 0 : effectiveTimeout,
-      });
+      const timeoutSource = options?.overrideTimeout ?? timeout;
+      const hasProvidedTimeout = typeof timeoutSource === 'number' && timeoutSource > 0;
+      const effectiveTimeout = hasProvidedTimeout
+        ? timeoutSource
+        : options?.disableFallbackTimeout
+          ? undefined
+          : normalizeTimeout(timeoutSource);
+
+      const agentOptions: ConstructorParameters<typeof Agent>[0] = {};
+
+      if (hasTimeoutsDisabled) {
+        agentOptions.bodyTimeout = 0;
+        agentOptions.headersTimeout = 0;
+      } else {
+        if (effectiveTimeout !== undefined) {
+          agentOptions.headersTimeout = effectiveTimeout;
+        }
+
+        if (options?.disableBodyTimeout) {
+          agentOptions.bodyTimeout = 0;
+        } else if (effectiveTimeout !== undefined) {
+          agentOptions.bodyTimeout = effectiveTimeout;
+        }
+      }
+
+      const agent =
+        Object.keys(agentOptions).length > 0 ? new Agent(agentOptions) : undefined;
       if (!requestHeaders) {
         return undiciFetch(input, { ...init, dispatcher: agent });
       }
@@ -304,7 +350,7 @@ export class MCPConnection extends EventEmitter {
             headers['Authorization'] = `Bearer ${this.oauthTokens.access_token}`;
           }
 
-          const timeoutValue = this.timeout ?? DEFAULT_TIMEOUT;
+          const timeoutValue = normalizeTimeout(this.timeout);
           const transport = new SSEClientTransport(url, {
             requestInit: {
               headers,
@@ -368,7 +414,11 @@ export class MCPConnection extends EventEmitter {
             fetch: this.createFetchFunction(
               this.getRequestHeaders.bind(this),
               this.timeout,
-              { disableBodyTimeout: true, disableAllTimeouts: true },
+              {
+                disableBodyTimeout: true,
+                disableFallbackTimeout: true,
+                disableAllTimeouts: true,
+              },
             ) as unknown as FetchLike,
           });
 
@@ -511,7 +561,7 @@ export class MCPConnection extends EventEmitter {
         this.transport = this.constructTransport(this.options);
         this.setupTransportDebugHandlers();
 
-        const connectTimeout = this.options.initTimeout ?? 120000;
+        const connectTimeout = normalizeTimeout(this.options.initTimeout, 120000);
         await withTimeout(
           this.client.connect(this.transport),
           connectTimeout,

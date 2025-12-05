@@ -229,12 +229,18 @@ Please follow these instructions when using tools from the respective MCP server
 
       const { timeout: overriddenTimeout, ...passthroughOptions } = options ?? {};
 
+      const normalizedOverrideTimeout =
+        overriddenTimeout != null && overriddenTimeout > 0 ? overriddenTimeout : undefined;
+
+      const shouldApplyDefaultTimeout =
+        normalizedOverrideTimeout == null && !connection.usesStreamableTransport();
+
       const requestOptions = {
         resetTimeoutOnProgress: true,
         ...passthroughOptions,
-        ...(overriddenTimeout != null
-          ? { timeout: overriddenTimeout }
-          : connection.timeout != null
+        ...(normalizedOverrideTimeout != null
+          ? { timeout: normalizedOverrideTimeout }
+          : shouldApplyDefaultTimeout && connection.timeout != null
             ? { timeout: connection.timeout }
             : {}),
       } satisfies RequestOptions;
