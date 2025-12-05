@@ -504,6 +504,8 @@ export const useMCPServerConnectionStatusQuery = (
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
       refetchOnMount: false,
+      refetchInterval: 5000,
+      refetchIntervalInBackground: true,
       staleTime: 10000, // 10 seconds
       enabled: !!serverName,
       ...config,

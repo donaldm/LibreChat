@@ -592,6 +592,7 @@ export default function useEventHandlers({
             navigate(`/c/${conversation.conversationId}`, { replace: true });
           }
         }
+        queryClient.invalidateQueries({ queryKey: [QueryKeys.mcpConnectionStatus] });
       } finally {
         setShowStopButton(false);
         setIsSubmitting(false);
@@ -721,6 +722,7 @@ export default function useEventHandlers({
         });
       }
 
+      queryClient.invalidateQueries({ queryKey: [QueryKeys.mcpConnectionStatus] });
       setIsSubmitting(false);
       setShowStopButton(false);
       return;

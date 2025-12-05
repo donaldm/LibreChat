@@ -3,6 +3,7 @@ import { v4 } from 'uuid';
 import { SSE } from 'sse.js';
 import { useSetRecoilState } from 'recoil';
 import {
+  QueryKeys,
   request,
   Constants,
   /* @ts-ignore */
@@ -17,6 +18,8 @@ import { useGenTitleMutation, useGetStartupConfig, useGetUserBalance } from '~/d
 import { useAuthContext } from '~/hooks/AuthContext';
 import useEventHandlers from './useEventHandlers';
 import store from '~/store';
+import { useQueryClient } from '@tanstack/react-query';
+import type { MCPServerStatus, MCPConnectionStatusResponse } from 'librechat-data-provider';
 
 const clearDraft = (conversationId?: string | null) => {
   if (conversationId) {
@@ -46,6 +49,7 @@ export default function useSSE(
 ) {
   const genTitle = useGenTitleMutation();
   const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
+  const queryClient = useQueryClient();
 
   const { token, isAuthenticated } = useAuthContext();
   const [completed, setCompleted] = useState(new Set());
@@ -90,6 +94,55 @@ export default function useSSE(
     enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
   });
 
+  const applyStreamedConnectionStatus = (update: unknown) => {
+    if (update == null) {
+      return;
+    }
+
+    const resolvedStatus: Record<string, MCPServerStatus> = {};
+
+    if (typeof update === 'object' && !Array.isArray(update)) {
+      const record = update as Record<string, unknown>;
+
+      if (
+        typeof record.serverName === 'string' &&
+        typeof record.connectionStatus === 'string'
+      ) {
+        resolvedStatus[record.serverName] = {
+          connectionState: record.connectionStatus as MCPServerStatus['connectionState'],
+          requiresOAuth: Boolean(record.requiresOAuth),
+        };
+      } else {
+        for (const [serverName, status] of Object.entries(record)) {
+          if (status && typeof status === 'object' && 'connectionState' in status) {
+            const { connectionState, requiresOAuth } = status as MCPServerStatus;
+            if (typeof connectionState === 'string') {
+              resolvedStatus[serverName] = {
+                connectionState,
+                requiresOAuth: Boolean(requiresOAuth),
+              };
+            }
+          }
+        }
+      }
+    }
+
+    if (Object.keys(resolvedStatus).length === 0) {
+      return;
+    }
+
+    queryClient.setQueryData<MCPConnectionStatusResponse | undefined>(
+      [QueryKeys.mcpConnectionStatus],
+      (previous) => {
+        const existing = previous?.connectionStatus ?? {};
+        return {
+          success: true,
+          connectionStatus: { ...existing, ...resolvedStatus },
+        };
+      },
+    );
+  };
+
   useEffect(() => {
     if (submission == null || Object.keys(submission).length === 0) {
       return;
@@ -120,6 +173,10 @@ export default function useSSE(
 
     sse.addEventListener('message', (e: MessageEvent) => {
       const data = JSON.parse(e.data);
+
+      applyStreamedConnectionStatus(
+        data?.connectionStatus ?? data?.mcpConnectionStatus ?? data?.connection_state,
+      );
 
       if (data.final != null) {
         clearDraft(submission.conversation?.conversationId);
@@ -264,6 +321,9 @@ export default function useSSE(
       let data: TResData | undefined = undefined;
       try {
         data = JSON.parse(e.data) as TResData;
+        applyStreamedConnectionStatus(
+          data?.connectionStatus ?? data?.mcpConnectionStatus ?? data?.connection_state,
+        );
       } catch (error) {
         console.error(error);
         console.log(e);
