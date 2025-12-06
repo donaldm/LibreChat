@@ -180,6 +180,15 @@ function isTimeoutAbortReason(reason) {
  * @param {number} [intervalMs=15000] - Frequency to emit keep-alive comments
  * @returns {() => void} Cleanup function to stop the interval and listeners
  */
+/**
+ * Keeps the SSE connection alive during long-running MCP tool calls by
+ * periodically sending a harmless comment frame. This prevents proxies or
+ * browsers from timing out idle streams while we wait for upstream results.
+ *
+ * @param {ServerResponse} res - Express response object for SSE stream
+ * @param {number} [intervalMs=15000] - Frequency to emit keep-alive comments
+ * @returns {() => void} Cleanup function to stop the interval and listeners
+ */
 function startKeepAlive(res, intervalMs = 15000) {
   if (!res?.write) {
     return () => {};
@@ -274,8 +283,6 @@ async function reconnectServer({ res, user, index, signal, serverName, userMCPAu
     userMCPAuthMap,
     forceNew: true,
     returnOnOAuth: false,
-    // Long-running MCP pipelines routinely exceed two minutes; extend the
-    // connection timeout so the stream stays alive through completion.
     connectionTimeout: Time.TEN_MINUTES,
   });
 }
@@ -411,6 +418,7 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
     try {
       const flowsCache = getLogStores(CacheKeys.FLOWS);
       const flowManager = getFlowStateManager(flowsCache);
+
       if (config?.signal) {
         internalAbortController = new AbortController();
 
@@ -438,6 +446,7 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
       } else {
         derivedSignal = undefined;
       }
+
       const mcpManager = getMCPManager(userId);
       const provider = (config?.metadata?.provider || _provider)?.toLowerCase();
 
