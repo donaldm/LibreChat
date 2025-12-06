@@ -707,6 +707,7 @@ export class MCPConnection extends EventEmitter {
       ) {
         this.emit('notification', msg);
       }
+
       existingOnMessage?.(msg);
     };
 
