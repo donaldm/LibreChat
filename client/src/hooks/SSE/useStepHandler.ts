@@ -225,7 +225,9 @@ export default function useStepHandler({
       };
     } else if (contentType === ContentTypes.TOOL_CALL && 'tool_call' in contentPart) {
       const existingContent = updatedContent[index] as Agents.ToolCallContent | undefined;
-      const existingToolCall = existingContent?.tool_call;
+      const existingToolCall = existingContent?.tool_call as
+        | (Agents.ToolCall & { streaming_output?: string })
+        | undefined;
       const toolCallArgs = (contentPart.tool_call as Agents.ToolCall).args;
       /** When args are a valid object, they are likely already invoked */
       let args =
@@ -242,7 +244,9 @@ export default function useStepHandler({
       const id = getNonEmptyValue([contentPart.tool_call.id, existingToolCall?.id]) ?? '';
       const name = getNonEmptyValue([contentPart.tool_call.name, existingToolCall?.name]) ?? '';
 
-      const newToolCall: Agents.ToolCall & PartMetadata = {
+      const newToolCall: (Agents.ToolCall & PartMetadata) | (Agents.ToolCall & PartMetadata & {
+          streaming_output?: string;
+        }) = {
         id,
         name,
         args,
@@ -251,9 +255,36 @@ export default function useStepHandler({
         expires_at: contentPart.tool_call.expires_at,
       };
 
+      if (existingToolCall?.streaming_output) {
+        newToolCall.streaming_output = existingToolCall.streaming_output;
+      }
+
       if (finalUpdate) {
         newToolCall.progress = 1;
-        newToolCall.output = contentPart.tool_call.output;
+        const existingOutput =
+          typeof existingToolCall?.output === 'string' ? existingToolCall.output : undefined;
+        const streamingOutput =
+          typeof existingToolCall?.streaming_output === 'string'
+            ? existingToolCall.streaming_output
+            : undefined;
+        const finalOutput =
+          typeof contentPart.tool_call.output === 'string'
+            ? contentPart.tool_call.output
+            : undefined;
+
+        newToolCall.streaming_output = streamingOutput;
+
+        if (finalOutput && streamingOutput && finalOutput !== streamingOutput) {
+          newToolCall.output = `${streamingOutput}\n${finalOutput}`;
+        } else if (finalOutput) {
+          newToolCall.output = finalOutput;
+        } else if (existingOutput) {
+          newToolCall.output = existingOutput;
+        } else if (streamingOutput) {
+          newToolCall.output = streamingOutput;
+        }
+      } else if (existingToolCall?.output && newToolCall.output == null) {
+        newToolCall.output = existingToolCall.output;
       }
 
       updatedContent[index] = {

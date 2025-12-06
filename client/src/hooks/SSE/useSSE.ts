@@ -71,6 +71,7 @@ export default function useSSE(
     contentHandler,
     createdHandler,
     attachmentHandler,
+    mcpNotificationHandler,
     abortConversation,
   } = useEventHandlers({
     genTitle,
@@ -144,6 +145,8 @@ export default function useSSE(
         };
 
         createdHandler(data, { ...submission, userMessage } as EventSubmission);
+      } else if (data.event === 'mcp_notification') {
+        mcpNotificationHandler?.(data.data, { ...submission, userMessage } as EventSubmission);
       } else if (data.event != null) {
         stepHandler(data, { ...submission, userMessage } as EventSubmission);
       } else if (data.sync != null) {

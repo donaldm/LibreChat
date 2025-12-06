@@ -174,6 +174,7 @@ Please follow these instructions when using tools from the respective MCP server
     oauthStart,
     oauthEnd,
     customUserVars,
+    onNotification,
   }: {
     user?: IUser;
     serverName: string;
@@ -187,9 +188,11 @@ Please follow these instructions when using tools from the respective MCP server
     flowManager: FlowStateManager<MCPOAuthTokens | null>;
     oauthStart?: (authURL: string) => Promise<void>;
     oauthEnd?: () => Promise<void>;
+    onNotification?: (message: unknown) => void;
   }): Promise<t.FormattedToolResponse> {
     /** User-specific connection */
     let connection: MCPConnection | undefined;
+    let notificationHandler: ((message: unknown) => void) | null = null;
     const userId = user?.id;
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
 
@@ -207,6 +210,11 @@ Please follow these instructions when using tools from the respective MCP server
         customUserVars,
         requestBody,
       });
+
+      if (onNotification) {
+        notificationHandler = (message: unknown) => onNotification(message);
+        connection.on('notification', notificationHandler);
+      }
 
       const isStreamableTransport = connection.isStreamable();
       logger.info(`${logPrefix}[${toolName}] Preparing MCP tool call`, {
@@ -271,6 +279,10 @@ Please follow these instructions when using tools from the respective MCP server
       logger.error(`${logPrefix}[${toolName}] Tool call failed`, error);
       // Rethrowing allows the caller (createMCPTool) to handle the final user message
       throw error;
+    } finally {
+      if (notificationHandler && connection) {
+        connection.off('notification', notificationHandler);
+      }
     }
   }
 }

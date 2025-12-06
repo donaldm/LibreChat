@@ -25,6 +25,7 @@ function OptimizedCodeBlock({ text, maxHeight = 320 }: { text: string; maxHeight
 export default function ToolCallInfo({
   input,
   output,
+  streamingOutput,
   domain,
   function_name,
   pendingAuth,
@@ -33,6 +34,7 @@ export default function ToolCallInfo({
   input: string;
   function_name: string;
   output?: string | null;
+  streamingOutput?: string;
   domain?: string;
   pendingAuth?: boolean;
   attachments?: TAttachment[];
@@ -71,6 +73,16 @@ export default function ToolCallInfo({
         <div>
           <OptimizedCodeBlock text={formatText(input)} maxHeight={250} />
         </div>
+        {streamingOutput && (
+          <>
+            <div className="my-2 text-sm font-medium text-text-primary">
+              {localize('com_ui_live_updates')}
+            </div>
+            <div>
+              <OptimizedCodeBlock text={formatText(streamingOutput)} maxHeight={200} />
+            </div>
+          </>
+        )}
         {output && (
           <>
             <div className="my-2 text-sm font-medium text-text-primary">
