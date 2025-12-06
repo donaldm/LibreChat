@@ -379,6 +379,7 @@ export default function useStepHandler({
           console.warn('No message id found in agent update event');
           return;
         }
+
         parentMessageId = derivedParentId;
 
         const response = messageMap.current.get(responseMessageId);
