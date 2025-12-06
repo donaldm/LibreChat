@@ -202,7 +202,17 @@ export default function useEventHandlers({
   const attachmentHandler = useAttachmentHandler(queryClient);
 
   const mcpNotificationHandler = useCallback(
-    (eventData: { message?: string; level?: string; runId?: string; stepId?: string }, submission: EventSubmission) => {
+    (
+      eventData: {
+        message?: string;
+        level?: string;
+        runId?: string;
+        stepId?: string;
+        serverName?: string;
+        toolName?: string;
+      },
+      submission: EventSubmission,
+    ) => {
       const messageText = eventData?.message;
       if (!messageText) {
         return;
@@ -213,21 +223,96 @@ export default function useEventHandlers({
       const targetStepId = eventData?.stepId;
       const messages = getMessages() || [];
       const targetIndex = messages.findIndex((msg) => msg.messageId === targetRunId);
+      const stepMatchIndex =
+        targetIndex === -1 && targetStepId
+          ? messages.findIndex((msg) =>
+              (msg.content ?? []).some(
+                (part) => part?.type === ContentTypes.TOOL_CALL && part?.tool_call?.id === targetStepId,
+              ),
+            )
+          : -1;
 
-      if (targetIndex === -1) {
+      const toolNameMatchIndex = (() => {
+        if (targetIndex !== -1 || stepMatchIndex !== -1) {
+          return -1;
+        }
+
+        const { serverName, toolName } = eventData ?? {};
+        const nameHint = [toolName, serverName].filter(Boolean).join(Constants.mcp_delimiter);
+        if (!nameHint) {
+          return -1;
+        }
+
+        for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+          const msg = messages[idx];
+          if ((msg.content ?? []).some((part) => part?.type === ContentTypes.TOOL_CALL)) {
+            const hasNameMatch = (msg.content ?? []).some((part) => {
+              if (part?.type !== ContentTypes.TOOL_CALL) {
+                return false;
+              }
+
+              const toolCallName = part?.tool_call?.name ?? '';
+              return toolCallName.includes(nameHint) || toolCallName === toolName;
+            });
+
+            if (hasNameMatch) {
+              return idx;
+            }
+          }
+        }
+
+        return -1;
+      })();
+
+      let lastToolCallIndex = -1;
+      if (targetIndex === -1 && stepMatchIndex === -1 && toolNameMatchIndex === -1) {
+        for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+          const message = messages[idx];
+          if ((message.content ?? []).some((part) => part?.type === ContentTypes.TOOL_CALL)) {
+            lastToolCallIndex = idx;
+            break;
+          }
+        }
+      }
+
+      const resolvedIndex =
+        targetIndex !== -1
+          ? targetIndex
+          : stepMatchIndex !== -1
+            ? stepMatchIndex
+            : toolNameMatchIndex !== -1
+              ? toolNameMatchIndex
+              : lastToolCallIndex;
+
+      if (resolvedIndex === -1) {
         return;
       }
 
-      const targetMessage = messages[targetIndex];
+      const targetMessage = messages[resolvedIndex];
       const content = [...(targetMessage.content ?? [])];
       const formattedMessage = eventData?.level ? `[${eventData.level}] ${messageText}` : messageText;
-      let updated = false;
+      const { serverName, toolName } = eventData ?? {};
 
-      const toolIndex = content.findIndex(
-        (part) =>
-          part?.type === ContentTypes.TOOL_CALL &&
-          (targetStepId == null || part?.tool_call?.id === targetStepId),
-      );
+      const toolIndex = content.findIndex((part) => {
+        if (part?.type !== ContentTypes.TOOL_CALL) {
+          return false;
+        }
+
+        if (targetStepId != null && part?.tool_call?.id === targetStepId) {
+          return true;
+        }
+
+        const toolCallName = part?.tool_call?.name ?? '';
+        if (toolName && toolCallName === toolName) {
+          return true;
+        }
+
+        if (serverName && toolCallName.includes(serverName)) {
+          return true;
+        }
+
+        return false;
+      });
 
       if (toolIndex !== -1) {
         const toolPart = content[toolIndex] as TMessageContentParts;
@@ -249,23 +334,15 @@ export default function useEventHandlers({
           ...toolPart,
           [ContentTypes.TOOL_CALL]: toolCall,
         } as TMessageContentParts;
-        updated = true;
-      }
-
-      if (!updated) {
+      } else {
         content.push({
           type: ContentTypes.TEXT,
           text: formattedMessage,
         });
-        updated = true;
-      }
-
-      if (!updated) {
-        return;
       }
 
       const updatedMessages = messages.map((msg, idx) =>
-        idx === targetIndex ? ({ ...targetMessage, content } as TMessage) : msg,
+        idx === resolvedIndex ? ({ ...targetMessage, content } as TMessage) : msg,
       );
       setMessages(updatedMessages);
     },
