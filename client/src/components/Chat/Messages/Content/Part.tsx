@@ -139,6 +139,7 @@ const Part = memo(
             args={toolCall.args ?? ''}
             name={toolCall.name || ''}
             output={toolCall.output ?? ''}
+            streamingOutput={(toolCall as { streaming_output?: string }).streaming_output ?? ''}
             initialProgress={toolCall.progress ?? 0.1}
             isSubmitting={isSubmitting}
             attachments={attachments}

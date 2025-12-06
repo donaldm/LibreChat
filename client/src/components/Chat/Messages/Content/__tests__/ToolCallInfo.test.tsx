@@ -15,6 +15,7 @@ jest.mock('~/hooks', () => ({
       com_assistants_action_attempt: `Attempted to use ${values?.[0]}`,
       com_assistants_attempt_info: 'Attempted to use function',
       com_ui_result: 'Result',
+      com_ui_live_updates: 'Live updates',
       com_ui_ui_resources: 'UI Resources',
     };
     return translations[key] || key;
@@ -187,6 +188,15 @@ describe('ToolCallInfo', () => {
       expect(UIResourceRenderer).not.toHaveBeenCalled();
       expect(UIResourceCarousel).not.toHaveBeenCalled();
     });
+  });
+
+  it('renders live updates before final result when streaming output is provided', () => {
+    render(<ToolCallInfo {...mockProps} streamingOutput={'Step 1'} output={'Final'} />);
+
+    expect(screen.getByText('Live updates')).toBeInTheDocument();
+    expect(screen.getByText('Result')).toBeInTheDocument();
+    expect(screen.getByText('Step 1')).toBeInTheDocument();
+    expect(screen.getByText('Final')).toBeInTheDocument();
   });
 
   describe('rendering logic', () => {

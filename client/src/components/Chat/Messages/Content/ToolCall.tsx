@@ -16,6 +16,7 @@ export default function ToolCall({
   name,
   args: _args = '',
   output,
+  streamingOutput,
   attachments,
   auth,
 }: {
@@ -25,6 +26,7 @@ export default function ToolCall({
   name: string;
   args: string | Record<string, unknown>;
   output?: string | null;
+  streamingOutput?: string | null;
   attachments?: TAttachment[];
   auth?: string;
   expires_at?: number;
@@ -77,9 +79,12 @@ export default function ToolCall({
   }, [_args]) as string | undefined;
 
   const hasInfo = useMemo(
-    () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0,
-    [args, output],
+    () =>
+      (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0 || (streamingOutput?.length ?? 0) > 0,
+    [args, output, streamingOutput],
   );
+
+  const hasLiveUpdates = typeof streamingOutput === 'string' && streamingOutput.trim().length > 0;
 
   const authDomain = useMemo(() => {
     const authURL = auth ?? '';
@@ -181,6 +186,16 @@ export default function ToolCall({
           error={cancelled}
         />
       </div>
+      {hasLiveUpdates && (
+        <div className="mb-2 rounded-xl border border-border-light bg-surface-secondary p-3 text-xs text-text-primary shadow-sm">
+          <div className="mb-1 text-[13px] font-medium text-text-primary">
+            {localize('com_ui_live_updates')}
+          </div>
+          <pre className="m-0 whitespace-pre-wrap break-words" style={{ overflowWrap: 'break-word' }}>
+            {streamingOutput}
+          </pre>
+        </div>
+      )}
       <div
         className="relative"
         style={{
@@ -214,6 +229,7 @@ export default function ToolCall({
                 key="tool-call-info"
                 input={args ?? ''}
                 output={output}
+                streamingOutput={streamingOutput ?? undefined}
                 domain={authDomain || (domain ?? '')}
                 function_name={function_name}
                 pendingAuth={authDomain.length > 0 && !cancelled && progress < 1}

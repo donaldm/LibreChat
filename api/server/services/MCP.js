@@ -484,6 +484,34 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
 
       stopKeepAlive = startKeepAlive(res);
 
+      const handleNotification = (message) => {
+        try {
+          const notification =
+            message && typeof message === 'object' && 'params' in message
+              ? message?.params ?? {}
+              : {};
+          const text = notification?.data?.msg;
+          if (!text || typeof text !== 'string') {
+            return;
+          }
+
+          sendEvent(res, {
+            event: 'mcp_notification',
+            data: {
+              message: text,
+              level: notification?.level,
+              runId,
+              stepId,
+              serverName,
+              toolName,
+              timestamp: Date.now(),
+            },
+          });
+        } catch (error) {
+          logger.warn(`[MCP][${serverName}][${toolName}] Failed to emit MCP notification`, error);
+        }
+      };
+
       const result = await mcpManager.callTool({
         serverName,
         toolName,
@@ -503,6 +531,7 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         },
         oauthStart,
         oauthEnd,
+        onNotification: handleNotification,
       });
 
       // Notify the client that the MCP tool call has completed so UI state can update

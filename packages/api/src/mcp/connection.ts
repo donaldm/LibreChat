@@ -698,6 +698,15 @@ export class MCPConnection extends EventEmitter {
       } else {
         logger.debug(`${logPrefix}: ${JSON.stringify(msg)}`);
       }
+
+      if (
+        msg &&
+        typeof msg === 'object' &&
+        'method' in msg &&
+        msg.method === 'notifications/message'
+      ) {
+        this.emit('notification', msg);
+      }
       existingOnMessage?.(msg);
     };
 

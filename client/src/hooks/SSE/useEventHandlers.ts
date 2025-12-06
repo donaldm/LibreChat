@@ -14,10 +14,12 @@ import {
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
 import type {
+  Agents,
   TMessage,
   TConversation,
   EventSubmission,
   TStartupConfig,
+  TMessageContentParts,
 } from 'librechat-data-provider';
 import type { TResData, TFinalResData, ConvoGenerator } from '~/common';
 import type { InfiniteData } from '@tanstack/react-query';
@@ -198,6 +200,77 @@ export default function useEventHandlers({
     lastAnnouncementTimeRef,
   });
   const attachmentHandler = useAttachmentHandler(queryClient);
+
+  const mcpNotificationHandler = useCallback(
+    (eventData: { message?: string; level?: string; runId?: string; stepId?: string }, submission: EventSubmission) => {
+      const messageText = eventData?.message;
+      if (!messageText) {
+        return;
+      }
+
+      const targetRunId =
+        eventData?.runId ?? submission?.initialResponse?.messageId ?? submission.userMessage.messageId;
+      const targetStepId = eventData?.stepId;
+      const messages = getMessages() || [];
+      const targetIndex = messages.findIndex((msg) => msg.messageId === targetRunId);
+
+      if (targetIndex === -1) {
+        return;
+      }
+
+      const targetMessage = messages[targetIndex];
+      const content = [...(targetMessage.content ?? [])];
+      const formattedMessage = eventData?.level ? `[${eventData.level}] ${messageText}` : messageText;
+      let updated = false;
+
+      const toolIndex = content.findIndex(
+        (part) =>
+          part?.type === ContentTypes.TOOL_CALL &&
+          (targetStepId == null || part?.tool_call?.id === targetStepId),
+      );
+
+      if (toolIndex !== -1) {
+        const toolPart = content[toolIndex] as TMessageContentParts;
+        const toolCall = {
+          ...(toolPart[ContentTypes.TOOL_CALL] ?? {}),
+        } as Agents.ToolCall & { streaming_output?: string };
+
+        const previousStreaming =
+          typeof toolCall.streaming_output === 'string' ? toolCall.streaming_output : '';
+        const streaming_output = previousStreaming
+          ? `${previousStreaming}\n${formattedMessage}`
+          : formattedMessage;
+
+        const previousOutput = typeof toolCall.output === 'string' ? toolCall.output : '';
+        toolCall.streaming_output = streaming_output;
+        toolCall.output = previousOutput ? `${previousOutput}\n${formattedMessage}` : streaming_output;
+
+        content[toolIndex] = {
+          ...toolPart,
+          [ContentTypes.TOOL_CALL]: toolCall,
+        } as TMessageContentParts;
+        updated = true;
+      }
+
+      if (!updated) {
+        content.push({
+          type: ContentTypes.TEXT,
+          text: formattedMessage,
+        });
+        updated = true;
+      }
+
+      if (!updated) {
+        return;
+      }
+
+      const updatedMessages = messages.map((msg, idx) =>
+        idx === targetIndex ? ({ ...targetMessage, content } as TMessage) : msg,
+      );
+      setMessages(updatedMessages);
+    },
+    [getMessages, setMessages],
+  );
 
   const messageHandler = useCallback(
     (data: string | undefined, submission: EventSubmission) => {
@@ -872,6 +945,7 @@ export default function useEventHandlers({
     contentHandler,
     createdHandler,
     attachmentHandler,
+    mcpNotificationHandler,
     abortConversation,
   };
 }
