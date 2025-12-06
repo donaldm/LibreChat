@@ -78,13 +78,24 @@ export default function ToolCall({
     }
   }, [_args]) as string | undefined;
 
+  const [liveUpdates, setLiveUpdates] = useState(() => {
+    if (typeof streamingOutput === 'string' && streamingOutput.trim().length > 0) {
+      return streamingOutput;
+    }
+
+    if (isSubmitting && typeof output === 'string' && output.trim().length > 0) {
+      return output;
+    }
+
+    return '';
+  });
+
   const hasInfo = useMemo(
-    () =>
-      (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0 || (streamingOutput?.length ?? 0) > 0,
-    [args, output, streamingOutput],
+    () => (args?.length ?? 0) > 0 || (output?.length ?? 0) > 0 || liveUpdates.length > 0,
+    [args, output, liveUpdates.length],
   );
 
-  const hasLiveUpdates = typeof streamingOutput === 'string' && streamingOutput.trim().length > 0;
+  const hasLiveUpdates = liveUpdates.length > 0;
 
   const authDomain = useMemo(() => {
     const authURL = auth ?? '';
@@ -144,6 +155,17 @@ export default function ToolCall({
   }, [showInfo]);
 
   useEffect(() => {
+    if (typeof streamingOutput === 'string' && streamingOutput.trim().length > 0) {
+      setLiveUpdates(streamingOutput);
+      return;
+    }
+
+    if (isSubmitting && typeof output === 'string' && output.trim().length > 0) {
+      setLiveUpdates(output);
+    }
+  }, [isSubmitting, output, streamingOutput]);
+
+  useEffect(() => {
     if (!contentRef.current) {
       return;
     }
@@ -192,7 +214,7 @@ export default function ToolCall({
             {localize('com_ui_live_updates')}
           </div>
           <pre className="m-0 whitespace-pre-wrap break-words" style={{ overflowWrap: 'break-word' }}>
-            {streamingOutput}
+            {liveUpdates}
           </pre>
         </div>
       )}
@@ -229,7 +251,7 @@ export default function ToolCall({
                 key="tool-call-info"
                 input={args ?? ''}
                 output={output}
-                streamingOutput={streamingOutput ?? undefined}
+                streamingOutput={liveUpdates || undefined}
                 domain={authDomain || (domain ?? '')}
                 function_name={function_name}
                 pendingAuth={authDomain.length > 0 && !cancelled && progress < 1}
