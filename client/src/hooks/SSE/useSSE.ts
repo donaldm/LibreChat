@@ -251,27 +251,7 @@ export default function useSSE(
         setIsSubmitting(false);
       }
 
-      /* token expired, refresh and retry */
-      try {
-        const refreshResponse = await request.refreshToken();
-        const token = refreshResponse?.token ?? '';
-        if (!token) {
-          throw new Error('Token refresh failed.');
-        }
-        sse.headers = {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        };
-
-        request.dispatchTokenUpdatedEvent(token);
-        sse.stream();
-        return;
-      } catch (error) {
-        /* token refresh failed, continue handling the original 401 */
-        console.log(error);
-      }
-
-      //errorHandler({ data, submission: { ...submission, userMessage } as EventSubmission });
+      errorHandler({ data, submission: { ...submission, userMessage } as EventSubmission });
     });
 
     setIsSubmitting(true);
