@@ -476,8 +476,10 @@ export default function useEventHandlers({
         setCompleted((prev) => new Set(prev.add(submission.initialResponse.messageId)));
 
         const currentMessages = getMessages();
-        /* Early return if messages are empty; i.e., the user navigated away */
-        if (!currentMessages || currentMessages.length === 0) {
+        const hasMessages =
+          (currentMessages && currentMessages.length > 0) || (runMessages && runMessages.length > 0);
+        /* Early return if messages are empty and we have no runMessages; i.e., the user navigated away */
+        if (!hasMessages) {
           return;
         }
 

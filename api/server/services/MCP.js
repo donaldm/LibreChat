@@ -401,6 +401,12 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
 
       const { args: _args, stepId: _stepId, ...toolCall } = config.toolCall ?? {};
 
+      const conversationId =
+        config?.metadata?.conversation_id ??
+        config?.configurable?.requestBody?.conversationId ??
+        config?.metadata?.thread_id ??
+        null;
+
       // Step ID may arrive as `stepId` (from MCP tool calls) or `id` (from LangGraph)
       const stepId =
         _stepId ??
@@ -460,7 +466,16 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         const toolCallResult = {
           ...toolCall,
           output: typeof result === 'string' ? result : JSON.stringify(result),
+          conversationId,
         };
+
+        logger.info(`[MCP][${serverName}][${toolName}] Emitting run step completion`, {
+          stepId,
+          runId,
+          resultType: typeof result,
+          hasStreamPayload: Array.isArray(result?.content),
+          resultKeys: result && typeof result === 'object' ? Object.keys(result) : [],
+        });
 
         sendEvent(res, {
           event: GraphEvents.ON_RUN_STEP_COMPLETED,
@@ -471,6 +486,7 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
               id: stepId,
               index: typeof config?.toolCall?.index === 'number' ? config.toolCall.index : 0,
               tool_call: toolCallResult,
+              conversation_id: conversationId,
             },
           },
         });

@@ -147,6 +147,14 @@ export class MCPConnection extends EventEmitter {
     return this.requestHeaders;
   }
 
+  /**
+   * Indicates whether this connection is using the Streamable HTTP transport.
+   * Helpful for logging and diagnostics when tracing MCP traffic paths.
+   */
+  isStreamable(): boolean {
+    return this.isStreamableTransport;
+  }
+
   constructor(params: MCPConnectionParams) {
     super();
     this.options = params.serverConfig;
@@ -617,8 +625,18 @@ export class MCPConnection extends EventEmitter {
       return;
     }
 
+    const existingOnMessage = this.transport.onmessage?.bind(this.transport);
+
     this.transport.onmessage = (msg) => {
-      logger.debug(`${this.getLogPrefix()} Transport received: ${JSON.stringify(msg)}`);
+      const logPrefix = `${this.getLogPrefix()} Transport received`;
+
+      if (this.transport instanceof StreamableHTTPClientTransport) {
+        logger.info(`${logPrefix} [streamable-http]: ${JSON.stringify(msg)}`);
+      } else {
+        logger.debug(`${logPrefix}: ${JSON.stringify(msg)}`);
+      }
+
+      existingOnMessage?.(msg);
     };
 
     const originalSend = this.transport.send.bind(this.transport);
