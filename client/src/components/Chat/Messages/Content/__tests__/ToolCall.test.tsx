@@ -13,6 +13,7 @@ jest.mock('~/hooks', () => ({
       com_assistants_completed_action: `Completed action on ${values?.[0]}`,
       com_assistants_running_var: `Running ${values?.[0]}`,
       com_assistants_running_action: 'Running action',
+      com_ui_live_updates: 'Live updates',
       com_ui_sign_in_to_domain: `Sign in to ${values?.[0]}`,
       com_ui_cancelled: 'Cancelled',
       com_ui_requires_auth: 'Requires authentication',
@@ -89,6 +90,63 @@ describe('ToolCall', () => {
   });
 
   describe('attachments prop passing', () => {
+    it('shows live updates when output is streaming during submission', () => {
+      renderWithRecoil(
+        <ToolCall
+          {...mockProps}
+          output={'Streaming output'}
+          streamingOutput={''}
+          isSubmitting={true}
+        />,
+      );
+
+      expect(screen.getByText('Live updates')).toBeInTheDocument();
+      expect(screen.getByText('Streaming output')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Completed testFunction'));
+
+      const toolCallInfo = screen.getByTestId('tool-call-info');
+      const props = JSON.parse(toolCallInfo.textContent!);
+
+      expect(props.streamingOutput).toBe('Streaming output');
+    });
+
+    it('persists live updates in the collapsible info after submission finishes', () => {
+      const { rerender } = renderWithRecoil(
+        <ToolCall
+          {...mockProps}
+          output={''}
+          streamingOutput={'Step 1'}
+          isSubmitting={true}
+          initialProgress={0.5}
+        />,
+      );
+
+      expect(screen.getByText('Live updates')).toBeInTheDocument();
+      expect(screen.getByText('Step 1')).toBeInTheDocument();
+
+      rerender(
+        <RecoilRoot>
+          <ToolCall
+            {...mockProps}
+            output={'Final result'}
+            streamingOutput={''}
+            isSubmitting={false}
+            initialProgress={1}
+          />
+        </RecoilRoot>,
+      );
+
+      expect(screen.getByText('Step 1')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Completed testFunction'));
+
+      const toolCallInfo = screen.getByTestId('tool-call-info');
+      const props = JSON.parse(toolCallInfo.textContent!);
+
+      expect(props.streamingOutput).toBe('Step 1');
+    });
+
     it('should pass attachments to ToolCallInfo when provided', () => {
       const attachments = [
         {
