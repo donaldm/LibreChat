@@ -57,14 +57,23 @@ function isSSEOptions(options: t.MCPOptions): options is t.SSEOptions {
  * @returns True if options are for a streamable HTTP transport
  */
 function isStreamableHTTPOptions(options: t.MCPOptions): options is t.StreamableHTTPOptions {
-  if ('url' in options && 'type' in options) {
-    const optionType = options.type as string;
+  if (!('url' in options)) {
+    return false;
+  }
+
+  const protocol = new URL(options.url).protocol;
+
+  // If explicitly specified, honor the type
+  if ('type' in options && options.type) {
+    const optionType = String(options.type);
     if (optionType === 'streamable-http' || optionType === 'http') {
-      const protocol = new URL(options.url).protocol;
       return protocol !== 'ws:' && protocol !== 'wss:';
     }
+    return false;
   }
-  return false;
+
+  // If no type is provided but it's plain HTTP(S), treat as streamable HTTP by convention
+  return protocol === 'http:' || protocol === 'https:';
 }
 
 function isAbortLikeError(error: unknown): boolean {
@@ -101,6 +110,13 @@ function isAbortLikeError(error: unknown): boolean {
 
 const FIVE_MINUTES = 5 * 60 * 1000;
 const DEFAULT_TIMEOUT = mcpConfig.DEFAULT_TIMEOUT_MS || FIVE_MINUTES;
+
+const normalizeTimeout = (value: number | undefined, fallback = DEFAULT_TIMEOUT) => {
+  if (value == null || value <= 0) {
+    return fallback;
+  }
+  return value;
+};
 
 interface MCPConnectionParams {
   serverName: string;
@@ -147,11 +163,7 @@ export class MCPConnection extends EventEmitter {
     return this.requestHeaders;
   }
 
-  /**
-   * Indicates whether this connection is using the Streamable HTTP transport.
-   * Helpful for logging and diagnostics when tracing MCP traffic paths.
-   */
-  isStreamable(): boolean {
+  usesStreamableTransport(): boolean {
     return this.isStreamableTransport;
   }
 
@@ -162,9 +174,13 @@ export class MCPConnection extends EventEmitter {
     this.userId = params.userId;
     this.iconPath = params.serverConfig.iconPath;
     this.isStreamableTransport = isStreamableHTTPOptions(this.options);
+
+    const rawTimeout = params.serverConfig.timeout ?? mcpConfig.DEFAULT_TIMEOUT_MS;
     this.timeout = this.isStreamableTransport
-      ? 0
-      : params.serverConfig.timeout ?? mcpConfig.DEFAULT_TIMEOUT_MS;
+      ? rawTimeout && rawTimeout > 0
+        ? rawTimeout
+        : undefined
+      : normalizeTimeout(rawTimeout);
     this.lastPingTime = Date.now();
     if (params.oauthTokens) {
       this.oauthTokens = params.oauthTokens;
@@ -179,7 +195,11 @@ export class MCPConnection extends EventEmitter {
       },
     );
 
-    const defaultRequestTimeout = this.isStreamableTransport ? 0 : this.timeout ?? DEFAULT_TIMEOUT;
+    const streamableRequestTimeout =
+      this.timeout && this.timeout > 0 ? this.timeout : mcpConfig.DEFAULT_TIMEOUT_MS;
+    const defaultRequestTimeout = this.isStreamableTransport
+      ? streamableRequestTimeout
+      : normalizeTimeout(this.timeout);
     const originalRequest = this.client.request.bind(this.client);
 
     this.client.request = (request, schema, options) => {
@@ -213,7 +233,12 @@ export class MCPConnection extends EventEmitter {
   private createFetchFunction(
     getHeaders: () => Record<string, string> | null | undefined,
     timeout?: number,
-    options?: { disableBodyTimeout?: boolean; disableAllTimeouts?: boolean },
+    options?: {
+      disableBodyTimeout?: boolean;
+      disableAllTimeouts?: boolean;
+      disableFallbackTimeout?: boolean;
+      overrideTimeout?: number;
+    },
   ): (input: UndiciRequestInfo, init?: UndiciRequestInit) => Promise<UndiciResponse> {
     return function customFetch(
       input: UndiciRequestInfo,
@@ -221,11 +246,33 @@ export class MCPConnection extends EventEmitter {
     ): Promise<UndiciResponse> {
       const requestHeaders = getHeaders();
       const hasTimeoutsDisabled = options?.disableAllTimeouts === true;
-      const effectiveTimeout = hasTimeoutsDisabled ? 0 : timeout ?? DEFAULT_TIMEOUT;
-      const agent = new Agent({
-        bodyTimeout: hasTimeoutsDisabled || options?.disableBodyTimeout ? 0 : effectiveTimeout,
-        headersTimeout: hasTimeoutsDisabled ? 0 : effectiveTimeout,
-      });
+      const timeoutSource = options?.overrideTimeout ?? timeout;
+      const hasProvidedTimeout = typeof timeoutSource === 'number' && timeoutSource > 0;
+      const effectiveTimeout = hasProvidedTimeout
+        ? timeoutSource
+        : options?.disableFallbackTimeout
+          ? undefined
+          : normalizeTimeout(timeoutSource);
+
+      const agentOptions: ConstructorParameters<typeof Agent>[0] = {};
+
+      if (hasTimeoutsDisabled) {
+        agentOptions.bodyTimeout = 0;
+        agentOptions.headersTimeout = 0;
+      } else {
+        if (effectiveTimeout !== undefined) {
+          agentOptions.headersTimeout = effectiveTimeout;
+        }
+
+        if (options?.disableBodyTimeout) {
+          agentOptions.bodyTimeout = 0;
+        } else if (effectiveTimeout !== undefined) {
+          agentOptions.bodyTimeout = effectiveTimeout;
+        }
+      }
+
+      const agent =
+        Object.keys(agentOptions).length > 0 ? new Agent(agentOptions) : undefined;
       if (!requestHeaders) {
         return undiciFetch(input, { ...init, dispatcher: agent });
       }
@@ -312,7 +359,7 @@ export class MCPConnection extends EventEmitter {
             headers['Authorization'] = `Bearer ${this.oauthTokens.access_token}`;
           }
 
-          const timeoutValue = this.timeout ?? DEFAULT_TIMEOUT;
+          const timeoutValue = normalizeTimeout(this.timeout);
           const transport = new SSEClientTransport(url, {
             requestInit: {
               headers,
@@ -335,6 +382,7 @@ export class MCPConnection extends EventEmitter {
             fetch: this.createFetchFunction(
               this.getRequestHeaders.bind(this),
               this.timeout,
+              { disableBodyTimeout: true },
             ) as unknown as FetchLike,
           });
 
@@ -343,6 +391,7 @@ export class MCPConnection extends EventEmitter {
             this.emit('connectionChange', 'disconnected');
           };
 
+          // Note: message logging here is fine; we'll wrap the final onmessage after client.connect
           transport.onmessage = (message) => {
             logger.info(`${this.getLogPrefix()} Message received: ${JSON.stringify(message)}`);
           };
@@ -368,6 +417,9 @@ export class MCPConnection extends EventEmitter {
             headers['Authorization'] = `Bearer ${this.oauthTokens.access_token}`;
           }
 
+          logger.info(`${this.getLogPrefix()} using timeout value ${this.timeout}`);
+
+          const streamTimeout = this.timeout ?? DEFAULT_TIMEOUT;
           const transport = new StreamableHTTPClientTransport(url, {
             requestInit: {
               headers,
@@ -376,7 +428,11 @@ export class MCPConnection extends EventEmitter {
             fetch: this.createFetchFunction(
               this.getRequestHeaders.bind(this),
               this.timeout,
-              { disableBodyTimeout: true, disableAllTimeouts: true },
+              {
+                disableBodyTimeout: true,
+                disableFallbackTimeout: true,
+                disableAllTimeouts: true
+              },
             ) as unknown as FetchLike,
           });
 
@@ -385,6 +441,7 @@ export class MCPConnection extends EventEmitter {
             this.emit('connectionChange', 'disconnected');
           };
 
+          // Note: message logging here is fine; we'll wrap the final onmessage after client.connect
           transport.onmessage = (message: JSONRPCMessage) => {
             logger.info(`${this.getLogPrefix()} Message received: ${JSON.stringify(message)}`);
           };
@@ -404,7 +461,6 @@ export class MCPConnection extends EventEmitter {
   }
 
   private setupEventListeners(): void {
-    this.isInitializing = true;
     this.on('connectionChange', (state: t.ConnectionState) => {
       this.connectionState = state;
       if (state === 'connected') {
@@ -506,6 +562,7 @@ export class MCPConnection extends EventEmitter {
     this.emit('connectionChange', 'connecting');
 
     this.connectPromise = (async () => {
+      this.isInitializing = true;
       try {
         if (this.transport) {
           try {
@@ -517,14 +574,16 @@ export class MCPConnection extends EventEmitter {
         }
 
         this.transport = this.constructTransport(this.options);
-        this.setupTransportDebugHandlers();
 
-        const connectTimeout = this.options.initTimeout ?? 120000;
+        const connectTimeout = normalizeTimeout(this.options.initTimeout, 120000);
         await withTimeout(
           this.client.connect(this.transport),
           connectTimeout,
           `Connection timeout after ${connectTimeout}ms`,
         );
+
+        // Now that the client is wired up, wrap transport handlers for debug
+        this.setupTransportDebugHandlers();
 
         this.connectionState = 'connected';
         this.emit('connectionChange', 'connected');
@@ -536,7 +595,9 @@ export class MCPConnection extends EventEmitter {
           this.oauthRequired = true;
           const serverUrl = this.url;
           logger.debug(
-            `${this.getLogPrefix()} Server URL for OAuth: ${serverUrl ? sanitizeUrlForLogging(serverUrl) : 'undefined'}`,
+            `${this.getLogPrefix()} Server URL for OAuth: ${
+              serverUrl ? sanitizeUrlForLogging(serverUrl) : 'undefined'
+            }`,
           );
 
           const oauthTimeout = this.options.initTimeout ?? 60000 * 2;
@@ -613,6 +674,7 @@ export class MCPConnection extends EventEmitter {
         this.emit('connectionChange', 'error');
         throw error;
       } finally {
+        this.isInitializing = false;
         this.connectPromise = null;
       }
     })();
@@ -625,6 +687,7 @@ export class MCPConnection extends EventEmitter {
       return;
     }
 
+    // Wrap existing onmessage instead of overwriting it
     const existingOnMessage = this.transport.onmessage?.bind(this.transport);
 
     this.transport.onmessage = (msg) => {
@@ -635,7 +698,6 @@ export class MCPConnection extends EventEmitter {
       } else {
         logger.debug(`${logPrefix}: ${JSON.stringify(msg)}`);
       }
-
       existingOnMessage?.(msg);
     };
 
@@ -834,8 +896,9 @@ export class MCPConnection extends EventEmitter {
     }
 
     // Check for SSE error with 401 status
-    if ('message' in error && typeof error.message === 'string') {
-      return error.message.includes('401') || error.message.includes('Non-200 status code (401)');
+    if ('message' in error && typeof (error as any).message === 'string') {
+      const msg = (error as any).message as string;
+      return msg.includes('401') || msg.includes('Non-200 status code (401)');
     }
 
     // Check for error code
