@@ -172,6 +172,46 @@ function isTimeoutAbortReason(reason) {
 }
 
 /**
+ * Keeps the SSE connection alive during long-running MCP tool calls by
+ * periodically sending a harmless comment frame. This prevents proxies or
+ * browsers from timing out idle streams while we wait for upstream results.
+ *
+ * @param {ServerResponse} res - Express response object for SSE stream
+ * @param {number} [intervalMs=15000] - Frequency to emit keep-alive comments
+ * @returns {() => void} Cleanup function to stop the interval and listeners
+ */
+function startKeepAlive(res, intervalMs = 15000) {
+  if (!res?.write) {
+    return () => {};
+  }
+
+  const interval = setInterval(() => {
+    try {
+      if (res.writableEnded || res.destroyed) {
+        clearInterval(interval);
+        return;
+      }
+
+      // Use a custom event name so the client doesn't attempt to JSON.parse it
+      // in the standard "message" handler. An empty object keeps the payload
+      // valid JSON while keeping the event lightweight.
+      res.write('event: keep-alive\ndata: {}\n\n');
+    } catch (error) {
+      clearInterval(interval);
+      logger.warn('[MCP] Failed to write keep-alive frame to SSE stream', error);
+    }
+  }, intervalMs);
+
+  const cleanup = () => clearInterval(interval);
+  res.on?.('close', cleanup);
+
+  return () => {
+    cleanup();
+    res.off?.('close', cleanup);
+  };
+}
+
+/**
  * @param {Object} params
  * @param {() => void} params.runStepEmitter
  * @param {(authURL: string) => void} params.runStepDeltaEmitter
@@ -365,6 +405,8 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
     let internalAbortController = null;
     /** @type {(() => void) | null} */
     let signalCleanup = null;
+    /** @type {() => void} */
+    let stopKeepAlive = () => {};
 
     try {
       const flowsCache = getLogStores(CacheKeys.FLOWS);
@@ -439,6 +481,8 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
 
       const customUserVars =
         config?.configurable?.userMCPAuthMap?.[`${Constants.mcp_prefix}${serverName}`];
+
+      stopKeepAlive = startKeepAlive(res);
 
       const result = await mcpManager.callTool({
         serverName,
@@ -522,6 +566,7 @@ function createToolInstance({ res, toolName, serverName, toolDefinition, provide
         `[MCP][${serverName}][${toolName}] tool call failed${error?.message ? `: ${error?.message}` : '.'}`,
       );
     } finally {
+      stopKeepAlive();
       // Clean up abort handler to prevent memory leaks
       if (abortHandler && derivedSignal) {
         derivedSignal.removeEventListener('abort', abortHandler);
