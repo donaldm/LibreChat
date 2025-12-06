@@ -216,13 +216,6 @@ Please follow these instructions when using tools from the respective MCP server
         connection.on('notification', notificationHandler);
       }
 
-      const isStreamableTransport = connection.isStreamable();
-      logger.info(`${logPrefix}[${toolName}] Preparing MCP tool call`, {
-        provider,
-        transport: isStreamableTransport ? 'streamable-http' : 'non-streamable',
-        hasSignal: Boolean(options?.signal),
-      });
-
       if (!(await connection.isConnected())) {
         /** May happen if getUserConnection failed silently or app connection dropped */
         throw new McpError(
@@ -232,24 +225,32 @@ Please follow these instructions when using tools from the respective MCP server
       }
 
       const rawConfig = (await registry.getServerConfig(serverName, userId)) as t.MCPOptions;
+
       const currentOptions = processMCPEnv({
         user,
         options: rawConfig,
-        customUserVars: customUserVars,
+        customUserVars,
         body: requestBody,
       });
+
       if ('headers' in currentOptions) {
         connection.setRequestHeaders(currentOptions.headers || {});
       }
 
       const { timeout: overriddenTimeout, ...passthroughOptions } = options ?? {};
 
+      const normalizedOverrideTimeout =
+        overriddenTimeout != null && overriddenTimeout > 0 ? overriddenTimeout : undefined;
+
+      const shouldApplyDefaultTimeout =
+        normalizedOverrideTimeout == null && !connection.usesStreamableTransport();
+
       const requestOptions = {
         resetTimeoutOnProgress: true,
         ...passthroughOptions,
-        ...(overriddenTimeout != null
-          ? { timeout: overriddenTimeout }
-          : connection.timeout != null
+        ...(normalizedOverrideTimeout != null
+          ? { timeout: normalizedOverrideTimeout }
+          : shouldApplyDefaultTimeout && connection.timeout != null
             ? { timeout: connection.timeout }
             : {}),
       } satisfies RequestOptions;
@@ -268,10 +269,6 @@ Please follow these instructions when using tools from the respective MCP server
       if (userId) {
         this.updateUserLastActivity(userId);
       }
-      logger.info(`${logPrefix}[${toolName}] MCP tool call completed`, {
-        transport: isStreamableTransport ? 'streamable-http' : 'non-streamable',
-        resultKeys: result && typeof result === 'object' ? Object.keys(result as object) : [],
-      });
       this.checkIdleConnections();
       return formatToolContent(result as t.MCPToolCallResponse, provider);
     } catch (error) {
@@ -282,7 +279,6 @@ Please follow these instructions when using tools from the respective MCP server
     } finally {
       if (notificationHandler && connection) {
         connection.off('notification', notificationHandler);
-      }
     }
   }
 }
